@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+  <style>
+    /* center the canvas on the page */
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #BFEFFF; /* baby blue page background (fallback) */
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <script>
+    // five calm texts, slower speed
+    let calms = [];
+    const COUNT = 20;
+    const SPEED = 1.0; // slower movement
+    const ASPECT_W = 16;
+    const ASPECT_H = 9;
+
+    // background video (replace with your path)
+    const VIDEO_PATH = 'sky.mp4'; // << replace this with your file path
+    let bgVideo = null;
+    
+    // rick audio
+    const RICK_AUDIO_PATH = 'rick.mp3'; // << replace this with your rick audio file path
+    let rickAudio = null;
+
+    // sizes
+    const MOVING_TEXT_SIZE = 24;      // smaller moving text
+    const STATIC_TEXT_MAX = 72;       // max size for center text
+    const CALM_WORD = 'CALM';
+
+    // canvas / DOM refs
+    let cnv = null;
+
+    // spawned gif items
+    // each entry: { elt: p5.Element, timeoutId: number, calm: object, size: number }
+    let spawnedGifs = [];
+
+    function getCanvasSize() {
+      // fit a 16:9 canvas inside the window with small margins
+      let maxW = windowWidth * 0.95;
+      let maxH = windowHeight * 0.95;
+      let w = maxW;
+      let h = Math.round(w * ASPECT_H / ASPECT_W);
+      if (h > maxH) {
+        h = Math.round(maxH);
+        w = Math.round(h * ASPECT_W / ASPECT_H);
+      }
+      return { w, h };
+    }
+
+    function setup() {
+      const s = getCanvasSize();
+      cnv = createCanvas(s.w, s.h);
+      // ensure canvas DOM is positioned so we can place GIFs absolutely
+      cnv.style('position', 'relative');
+
+      // create and configure background video
+      // replace VIDEO_PATH above with your path when ready
+      bgVideo = createVideo(VIDEO_PATH, () => {
+        // callback when metadata/load starts
+        bgVideo.loop();
+        bgVideo.volume(0); // start muted so browsers allow autoplay
+        // make sure element is muted to satisfy autoplay rules until user interacts
+        if (bgVideo.elt) bgVideo.elt.muted = true;
+        bgVideo.hide();    // hide the DOM element; we'll draw it into the canvas
+      });
+      // try to start playing (may be blocked until user interaction in some browsers)
+      bgVideo.loop();
+      bgVideo.volume(0);
+      if (bgVideo.elt) bgVideo.elt.muted = true;
+      bgVideo.hide();
+
+      // create rick audio element
+      rickAudio = createAudio(RICK_AUDIO_PATH);
+      rickAudio.volume(1.0);
+      rickAudio.hide();
+
+      for (let i = 0; i < COUNT; i++) {
+        let angle = random(TWO_PI);
+        calms.push({
+          x: random(width),
+          y: random(height),
+          vx: cos(angle) * SPEED,
+          vy: sin(angle) * SPEED,
+          showRick: false,
+          rickEndTime: null
+        });
+      }
+
+      textSize(MOVING_TEXT_SIZE);
+      textAlign(CENTER, CENTER);
+    }
+
+    function draw() {
+      // draw background: video if available, otherwise baby blue
+      if (bgVideo) {
+        // draw current video frame stretched to canvas
+        image(bgVideo, 0, 0, width, height);
+      } else {
+        background('#BFEFFF');
+      }
+
+      // draw moving texts
+      fill(255);
+      noStroke();
+      textStyle(NORMAL);
+      textSize(MOVING_TEXT_SIZE);
+
+      for (let c of calms) {
+        c.x += c.vx;
+        c.y += c.vy;
+
+        // bounce on horizontal edges
+        if (c.x < 0) {
+          c.x = 0;
+          c.vx *= -1;
+        } else if (c.x > width) {
+          c.x = width;
+          c.vx *= -1;
+        }
+
+        // bounce on vertical edges
+        if (c.y < 0) {
+          c.y = 0;
+          c.vy *= -1;
+        } else if (c.y > height) {
+          c.y = height;
+          c.vy *= -1;
+        }
+
+        // check if this calm is showing rick instead of text
+        if (c.showRick && c.rickEndTime && millis() < c.rickEndTime) {
+          // skip drawing text, rick will be positioned by updateGifPositions
+          continue;
+        } else if (c.showRick) {
+          // time expired, reset
+          c.showRick = false;
+          c.rickEndTime = null;
+        }
+
+        text('calm', c.x, c.y);
+      }
+
+      // --- static centered text box (doesn't move) ---
+      // choose static text size based on canvas height
+      const staticSize = Math.min(STATIC_TEXT_MAX, Math.max(36, height * 0.12));
+      textSize(staticSize);
+      textStyle(BOLD);
+
+      // measure text so the box fits exactly
+      const txt = CALM_WORD;
+      const txtW = textWidth(txt);
+      const txtH = textAscent() + textDescent();
+
+      const padX = staticSize * 0.35; // horizontal padding
+      const padY = staticSize * 0.25; // vertical padding
+
+      const boxW = txtW + padX * 2;
+      const boxH = txtH + padY * 2;
+
+      // draw white box with no rounded corners (fits text exactly)
+      rectMode(CENTER);
+      fill(255, 230); // slightly soft white
+      noStroke();
+      rect(width / 2, height / 2, boxW, boxH); // square corners
+
+      // draw "cut out" text in ALL CAPS, bold
+      fill('#BFEFFF'); // same as page/canvas background -> looks "cut out"
+      text(txt, width / 2, height / 2);
+
+      // reset textStyle for moving texts
+      textStyle(NORMAL);
+      textSize(MOVING_TEXT_SIZE);
+
+      // update positions of spawned GIFs to follow their calm objects
+      updateGifPositions();
+    }
+
+    // update spawned GIF positions to match their corresponding calm objects
+    function updateGifPositions() {
+      for (let gif of spawnedGifs) {
+        if (gif.calm) {
+          const rect = cnv.elt.getBoundingClientRect();
+          const pxSize = gif.size;
+          const left = rect.left + (gif.calm.x - pxSize / 2);
+          const top = rect.top + (gif.calm.y - pxSize / 2);
+          gif.elt.position(left, top);
+        }
+      }
+    }
+
+    function windowResized() {
+      const s = getCanvasSize();
+      resizeCanvas(s.w, s.h);
+      // keep texts inside the new bounds
+      for (let c of calms) {
+        c.x = constrain(c.x, 0, width);
+        c.y = constrain(c.y, 0, height);
+      }
+      // resize background video element (safe even if video not loaded)
+      if (bgVideo && bgVideo.size) {
+        bgVideo.size(s.w, s.h);
+      }
+    }
+
+    // helper: spawn a rick.gif DOM image that follows a calm object
+    // GIF will be removed after durationMs
+    function spawnGifForCalm(calm, durationMs = 7000, pxSize = 128) {
+      // create DOM image element (animated GIF)
+      // ensure rick.gif is in the same folder as index.html or update path
+      const img = createImg('rick.gif');
+      img.style('position', 'absolute');
+      img.style('pointer-events', 'none'); // let clicks pass through if desired
+      img.size(pxSize, pxSize);
+      
+      // mark this calm as showing rick
+      calm.showRick = true;
+      calm.rickEndTime = millis() + durationMs;
+      
+      // if this is the first gif being spawned, switch audio to rick
+      if (spawnedGifs.length === 0) {
+        // mute video audio
+        if (bgVideo && bgVideo.elt) {
+          bgVideo.elt.muted = true;
+          bgVideo.volume(0);
+        }
+        // play rick audio from beginning
+        if (rickAudio) {
+          rickAudio.stop(); // ensure it starts from beginning
+          rickAudio.play();
+        }
+      }
+      
+      // keep record so we can update position and clear later
+      const timeoutId = setTimeout(() => {
+        img.remove();
+        calm.showRick = false;
+        calm.rickEndTime = null;
+        // remove from spawnedGifs array
+        spawnedGifs = spawnedGifs.filter(e => e.timeoutId !== timeoutId);
+        // if no more spawned gifs, switch back to video audio
+        if (spawnedGifs.length === 0) {
+          // stop rick audio
+          if (rickAudio) {
+            rickAudio.stop();
+          }
+          // unmute video audio
+          if (bgVideo && bgVideo.elt) {
+            bgVideo.elt.muted = false;
+            bgVideo.volume(1.0);
+          }
+        }
+      }, durationMs);
+
+      spawnedGifs.push({ elt: img, timeoutId, calm, size: pxSize });
+    }
+
+    // when user clicks inside canvas, check if a "calm" was clicked
+    function mousePressed() {
+      // only consider clicks inside the canvas
+      if (mouseX < 0 || mouseX > width || mouseY < 0 || mouseY > height) return;
+
+      // measure current moving text size (should match what draw used)
+      textSize(MOVING_TEXT_SIZE);
+      const txt = 'calm';
+      const txtW = textWidth(txt);
+      const halfW = txtW / 2;
+      const halfH = MOVING_TEXT_SIZE / 2;
+
+      // use index loop so we can check each instance
+      for (let i = 0; i < calms.length; i++) {
+        const c = calms[i];
+        if (abs(mouseX - c.x) <= halfW && abs(mouseY - c.y) <= halfH) {
+          // don't remove the calm, just show rick instead
+
+          // Note: audio switching is now handled in spawnGifForCalm
+          // but we still need to ensure video audio is unmuted initially
+          if (bgVideo && bgVideo.elt && spawnedGifs.length === 0) {
+            bgVideo.elt.muted = false;
+            bgVideo.volume(1.0);
+            bgVideo.loop();
+            bgVideo.play();
+          }
+
+          // spawn rick.gif that follows this calm object for 7 seconds
+          spawnGifForCalm(c, 7000, Math.round(MOVING_TEXT_SIZE * 5)); // gif size scaled to text size
+
+          // do not trigger multiple spawns for same click; break after first hit
+          break;
+        }
+      }
+    }
+  </script>
+</body>
+</html>
